@@ -1,0 +1,1316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EPUB → Markdown 转换器</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500;700&family=JetBrains+Mono:wght@300;400;500&family=Playfair+Display:ital,wght@0,700;1,500&display=swap');
+
+  :root {
+    --ink: #1a1208;
+    --paper: #f5f0e8;
+    --aged: #e8dfc8;
+    --sepia: #8b6914;
+    --rust: #c0392b;
+    --gold: #b8860b;
+    --shadow: rgba(26, 18, 8, 0.15);
+    --line: #d4c4a0;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Noto Serif SC', Georgia, serif;
+    min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* Paper texture overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 27px,
+        rgba(139, 105, 20, 0.06) 28px
+      );
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Aged paper grain */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.4;
+  }
+
+  .container {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 60px 40px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Header */
+  header {
+    text-align: center;
+    margin-bottom: 60px;
+    position: relative;
+  }
+
+  .header-rule {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .header-rule::before,
+  .header-rule::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(to right, transparent, var(--gold), transparent);
+  }
+
+  .header-rule span {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 4px;
+    color: var(--gold);
+    text-transform: uppercase;
+  }
+
+  h1 {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: clamp(36px, 6vw, 62px);
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    margin-bottom: 8px;
+  }
+
+  h1 em {
+    font-style: italic;
+    color: var(--sepia);
+  }
+
+  .subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--sepia);
+    letter-spacing: 1px;
+    margin-top: 12px;
+    opacity: 0.8;
+  }
+
+  /* Drop Zone */
+  .drop-zone {
+    border: 2px dashed var(--line);
+    border-radius: 4px;
+    padding: 60px 40px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    background: rgba(245, 240, 232, 0.5);
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 40px;
+  }
+
+  .drop-zone::before {
+    content: '';
+    position: absolute;
+    inset: 6px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    pointer-events: none;
+    opacity: 0.5;
+  }
+
+  .drop-zone:hover,
+  .drop-zone.drag-over {
+    border-color: var(--sepia);
+    background: rgba(232, 223, 200, 0.6);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px var(--shadow);
+  }
+
+  .drop-zone.drag-over {
+    border-style: solid;
+    border-color: var(--gold);
+  }
+
+  .drop-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    display: block;
+    filter: sepia(0.5);
+  }
+
+  .drop-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 8px;
+  }
+
+  .drop-sub {
+    font-size: 14px;
+    color: var(--sepia);
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.5px;
+  }
+
+  .drop-zone input[type="file"] {
+    display: none;
+  }
+
+  /* Options panel */
+  .options-panel {
+    background: var(--aged);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 28px 32px;
+    margin-bottom: 32px;
+    position: relative;
+  }
+
+  .options-panel::before {
+    content: '转换选项';
+    position: absolute;
+    top: -10px;
+    left: 20px;
+    background: var(--aged);
+    padding: 0 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--sepia);
+    text-transform: uppercase;
+  }
+
+  .options-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+  }
+
+  .option-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+  }
+
+  .option-item input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid var(--sepia);
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    transition: background 0.2s;
+  }
+
+  .option-item input[type="checkbox"]:checked {
+    background: var(--sepia);
+  }
+
+  .option-item input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 5px;
+    height: 9px;
+    border: 2px solid var(--paper);
+    border-top: none;
+    border-left: none;
+    transform: rotate(45deg);
+  }
+
+  .option-label {
+    font-size: 13px;
+    color: var(--ink);
+    font-family: 'Noto Serif SC', serif;
+    user-select: none;
+  }
+
+  /* File list */
+  .file-list {
+    margin-bottom: 32px;
+    display: none;
+  }
+
+  .file-list.visible { display: block; }
+
+  .file-list-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--sepia);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .file-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    background: rgba(245, 240, 232, 0.8);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin-bottom: 8px;
+    gap: 12px;
+    transition: all 0.2s;
+  }
+
+  .file-item:hover { background: var(--aged); }
+
+  .file-name {
+    flex: 1;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .file-size {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--sepia);
+    flex-shrink: 0;
+  }
+
+  .file-remove {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--sepia);
+    font-size: 16px;
+    padding: 2px 6px;
+    border-radius: 2px;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+
+  .file-remove:hover { background: var(--rust); color: white; }
+
+  /* Convert button */
+  .convert-btn {
+    width: 100%;
+    padding: 18px 32px;
+    background: var(--ink);
+    color: var(--paper);
+    border: none;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.3s;
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 40px;
+  }
+
+  .convert-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--sepia);
+    transform: translateX(-100%);
+    transition: transform 0.4s ease;
+  }
+
+  .convert-btn:hover::before { transform: translateX(0); }
+  .convert-btn span { position: relative; z-index: 1; }
+
+  .convert-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .convert-btn:disabled::before { display: none; }
+
+  /* Progress */
+  .progress-section {
+    display: none;
+    margin-bottom: 32px;
+  }
+
+  .progress-section.visible { display: block; }
+
+  .progress-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--sepia);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .progress-track {
+    height: 3px;
+    background: var(--line);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(to right, var(--sepia), var(--gold));
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.3s ease;
+  }
+
+  .progress-log {
+    margin-top: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--sepia);
+    line-height: 1.8;
+    max-height: 120px;
+    overflow-y: auto;
+    padding: 12px;
+    background: rgba(26, 18, 8, 0.04);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+
+  /* Results */
+  .results-section {
+    display: none;
+    margin-bottom: 40px;
+  }
+
+  .results-section.visible { display: block; }
+
+  .results-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .results-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+
+  .result-card {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 16px;
+    background: rgba(245, 240, 232, 0.6);
+  }
+
+  .result-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    background: var(--aged);
+    border-bottom: 1px solid var(--line);
+    gap: 12px;
+  }
+
+  .result-filename {
+    flex: 1;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+
+  .result-stats {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--sepia);
+  }
+
+  .result-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .btn-preview, .btn-download {
+    padding: 6px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border-radius: 2px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 1px solid;
+  }
+
+  .btn-preview {
+    background: transparent;
+    border-color: var(--sepia);
+    color: var(--sepia);
+  }
+
+  .btn-preview:hover { background: var(--sepia); color: var(--paper); }
+
+  .btn-download {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--paper);
+  }
+
+  .btn-download:hover { background: var(--sepia); border-color: var(--sepia); }
+
+  .result-preview {
+    display: none;
+    padding: 20px 24px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.9;
+    color: var(--ink);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    background: rgba(26, 18, 8, 0.02);
+    border-top: 1px solid var(--line);
+  }
+
+  .result-preview.open { display: block; }
+
+  /* Download all */
+  .download-all-btn {
+    width: 100%;
+    padding: 14px 24px;
+    background: transparent;
+    border: 2px solid var(--ink);
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.3s;
+    color: var(--ink);
+    display: none;
+  }
+
+  .download-all-btn:hover {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .download-all-btn.visible { display: block; }
+
+  /* Footer */
+  footer {
+    text-align: center;
+    padding: 40px 0 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--sepia);
+    letter-spacing: 1px;
+    opacity: 0.6;
+    border-top: 1px solid var(--line);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--aged); }
+  ::-webkit-scrollbar-thumb { background: var(--sepia); border-radius: 3px; }
+
+  /* Status badge */
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+  }
+
+  .status-ok { background: rgba(0,128,64,0.1); color: #006633; border: 1px solid rgba(0,128,64,0.2); }
+  .status-err { background: rgba(192,57,43,0.1); color: var(--rust); border: 1px solid rgba(192,57,43,0.2); }
+
+  /* Animations */
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .file-item, .result-card {
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .converting { animation: pulse 1.4s ease infinite; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="header-rule"><span>文字炼金术</span></div>
+    <h1>EPUB <em>to</em> Markdown</h1>
+    <p class="subtitle">// 将电子书转化为纯粹的文字</p>
+  </header>
+
+  <!-- Drop Zone -->
+  <div class="drop-zone" id="dropZone">
+    <input type="file" id="fileInput" accept=".epub" multiple>
+    <span class="drop-icon">📚</span>
+    <div class="drop-title">拖拽 EPUB 文件至此</div>
+    <div class="drop-sub">或点击选择文件 · 支持多文件批量转换</div>
+  </div>
+
+  <!-- Options -->
+  <div class="options-panel">
+    <div class="options-grid">
+      <label class="option-item">
+        <input type="checkbox" id="opt-toc" checked>
+        <span class="option-label">生成目录 (TOC)</span>
+      </label>
+      <label class="option-item">
+        <input type="checkbox" id="opt-meta" checked>
+        <span class="option-label">包含书籍元信息</span>
+      </label>
+      <label class="option-item">
+        <input type="checkbox" id="opt-chapter" checked>
+        <span class="option-label">章节标题分隔</span>
+      </label>
+      <label class="option-item">
+        <input type="checkbox" id="opt-clean">
+        <span class="option-label">清理多余空行</span>
+      </label>
+      <label class="option-item">
+        <input type="checkbox" id="opt-imgalt">
+        <span class="option-label">保留图片 alt 文本</span>
+      </label>
+      <label class="option-item">
+        <input type="checkbox" id="opt-footnotes" checked>
+        <span class="option-label">处理脚注</span>
+      </label>
+    </div>
+  </div>
+
+  <!-- File list -->
+  <div class="file-list" id="fileList">
+    <div class="file-list-title">待转换文件</div>
+    <div id="fileItems"></div>
+  </div>
+
+  <!-- Convert Button -->
+  <button class="convert-btn" id="convertBtn" disabled>
+    <span>开始转换</span>
+  </button>
+
+  <!-- Progress -->
+  <div class="progress-section" id="progressSection">
+    <div class="progress-label">
+      <span id="progressLabel">处理中...</span>
+      <span id="progressPct">0%</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+    <div class="progress-log" id="progressLog"></div>
+  </div>
+
+  <!-- Results -->
+  <div class="results-section" id="resultsSection">
+    <div class="results-title">转换结果</div>
+    <div id="resultItems"></div>
+  </div>
+
+  <button class="download-all-btn" id="downloadAllBtn">
+    ⬇ 打包下载全部 Markdown 文件
+  </button>
+
+  <footer>
+    <div style="margin-bottom:6px;">纯前端处理 · 文件不会上传至服务器 · 数据完全本地化</div>
+    <div>EPUB 2 &amp; EPUB 3 · UTF-8 编码输出</div>
+  </footer>
+</div>
+
+<script>
+// ==================== STATE ====================
+const state = {
+  files: [],
+  results: []
+};
+
+// ==================== DOM ====================
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const fileList = document.getElementById('fileList');
+const fileItems = document.getElementById('fileItems');
+const convertBtn = document.getElementById('convertBtn');
+const progressSection = document.getElementById('progressSection');
+const progressLabel = document.getElementById('progressLabel');
+const progressPct = document.getElementById('progressPct');
+const progressFill = document.getElementById('progressFill');
+const progressLog = document.getElementById('progressLog');
+const resultsSection = document.getElementById('resultsSection');
+const resultItems = document.getElementById('resultItems');
+const downloadAllBtn = document.getElementById('downloadAllBtn');
+
+// ==================== DROP ZONE ====================
+dropZone.addEventListener('click', () => fileInput.click());
+
+dropZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropZone.classList.add('drag-over');
+});
+
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const files = [...e.dataTransfer.files].filter(f => f.name.endsWith('.epub'));
+  addFiles(files);
+});
+
+fileInput.addEventListener('change', e => {
+  addFiles([...e.target.files]);
+  fileInput.value = '';
+});
+
+function addFiles(files) {
+  files.forEach(f => {
+    if (!state.files.find(x => x.name === f.name && x.size === f.size)) {
+      state.files.push(f);
+    }
+  });
+  renderFileList();
+}
+
+function removeFile(idx) {
+  state.files.splice(idx, 1);
+  renderFileList();
+}
+
+function renderFileList() {
+  const hasFiles = state.files.length > 0;
+  fileList.classList.toggle('visible', hasFiles);
+  convertBtn.disabled = !hasFiles;
+
+  fileItems.innerHTML = state.files.map((f, i) => `
+    <div class="file-item">
+      <span class="drop-icon" style="font-size:18px;filter:none">📖</span>
+      <span class="file-name">${escHtml(f.name)}</span>
+      <span class="file-size">${formatSize(f.size)}</span>
+      <button class="file-remove" onclick="removeFile(${i})" title="移除">✕</button>
+    </div>
+  `).join('');
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(2) + ' MB';
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ==================== CONVERSION ====================
+convertBtn.addEventListener('click', async () => {
+  if (!state.files.length) return;
+
+  convertBtn.disabled = true;
+  convertBtn.classList.add('converting');
+  state.results = [];
+  resultItems.innerHTML = '';
+  resultsSection.classList.remove('visible');
+  downloadAllBtn.classList.remove('visible');
+  progressSection.classList.add('visible');
+  progressLog.innerHTML = '';
+
+  const opts = {
+    toc: document.getElementById('opt-toc').checked,
+    meta: document.getElementById('opt-meta').checked,
+    chapter: document.getElementById('opt-chapter').checked,
+    clean: document.getElementById('opt-clean').checked,
+    imgalt: document.getElementById('opt-imgalt').checked,
+    footnotes: document.getElementById('opt-footnotes').checked,
+  };
+
+  for (let i = 0; i < state.files.length; i++) {
+    const file = state.files[i];
+    const pct = Math.round((i / state.files.length) * 100);
+    setProgress(pct, `正在转换: ${file.name}`);
+    log(`▶ 开始处理: ${file.name}`);
+
+    try {
+      const md = await convertEpub(file, opts);
+      const outName = file.name.replace(/\.epub$/i, '.md');
+      state.results.push({ name: outName, content: md, ok: true });
+      log(`✓ 完成: ${outName} (${formatSize(new Blob([md]).size)})`);
+    } catch (err) {
+      state.results.push({ name: file.name, content: '', ok: false, error: err.message });
+      log(`✗ 失败: ${file.name} — ${err.message}`);
+    }
+  }
+
+  setProgress(100, '转换完成');
+  log('━━━ 全部完成 ━━━');
+  convertBtn.disabled = false;
+  convertBtn.classList.remove('converting');
+
+  renderResults();
+});
+
+function setProgress(pct, label) {
+  progressFill.style.width = pct + '%';
+  progressPct.textContent = pct + '%';
+  progressLabel.textContent = label;
+}
+
+function log(msg) {
+  const line = document.createElement('div');
+  line.textContent = msg;
+  progressLog.appendChild(line);
+  progressLog.scrollTop = progressLog.scrollHeight;
+}
+
+function renderResults() {
+  resultsSection.classList.add('visible');
+  const okCount = state.results.filter(r => r.ok).length;
+
+  resultItems.innerHTML = state.results.map((r, i) => `
+    <div class="result-card">
+      <div class="result-header">
+        <span class="result-filename">${escHtml(r.name)}</span>
+        ${r.ok
+          ? `<span class="result-stats">${countWords(r.content)} 字符</span>
+             <div class="result-actions">
+               <button class="btn-preview" onclick="togglePreview(${i})">预览</button>
+               <button class="btn-download" onclick="downloadSingle(${i})">下载</button>
+             </div>
+             <span class="status-badge status-ok">✓ 成功</span>`
+          : `<span class="status-badge status-err">✗ 失败: ${escHtml(r.error||'')}</span>`
+        }
+      </div>
+      ${r.ok ? `<pre class="result-preview" id="preview-${i}">${escHtml(r.content.slice(0, 3000))}${r.content.length > 3000 ? '\n...(仅显示前3000字符)' : ''}</pre>` : ''}
+    </div>
+  `).join('');
+
+  if (okCount > 1) downloadAllBtn.classList.add('visible');
+}
+
+function countWords(str) {
+  return str.length.toLocaleString();
+}
+
+function togglePreview(i) {
+  const pre = document.getElementById(`preview-${i}`);
+  pre && pre.classList.toggle('open');
+}
+
+function downloadSingle(i) {
+  const r = state.results[i];
+  if (!r || !r.ok) return;
+  downloadText(r.content, r.name);
+}
+
+function downloadText(content, filename) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+downloadAllBtn.addEventListener('click', async () => {
+  const good = state.results.filter(r => r.ok);
+  if (!good.length) return;
+
+  if (good.length === 1) {
+    downloadSingle(state.results.indexOf(good[0]));
+    return;
+  }
+
+  // Pack into zip using JSZip
+  if (typeof JSZip === 'undefined') {
+    good.forEach(r => downloadText(r.content, r.name));
+    return;
+  }
+
+  const zip = new JSZip();
+  good.forEach(r => zip.file(r.name, r.content));
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'markdown_files.zip';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// ==================== EPUB PARSER ====================
+async function convertEpub(file, opts) {
+  const arrayBuffer = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(arrayBuffer);
+
+  // Parse container.xml to find OPF path
+  const containerXml = await zip.file('META-INF/container.xml').async('text');
+  const opfPath = parseContainerXml(containerXml);
+  const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : '';
+
+  // Parse OPF
+  const opfContent = await zip.file(opfPath).async('text');
+  const opfDoc = parseXml(opfContent);
+  const metadata = parseMetadata(opfDoc);
+  const manifest = parseManifest(opfDoc, opfDir);
+  const spine = parseSpine(opfDoc, manifest);
+  const tocPath = findTocPath(opfDoc, manifest, opfDir);
+
+  // Parse TOC
+  let tocItems = [];
+  if (tocPath && opts.toc) {
+    try {
+      const tocFile = zip.file(tocPath);
+      if (tocFile) {
+        const tocContent = await tocFile.async('text');
+        tocItems = parseToc(tocContent, tocPath);
+      }
+    } catch (e) {}
+  }
+
+  // Build markdown
+  const parts = [];
+
+  // Metadata block
+  if (opts.meta) {
+    const metaLines = ['---'];
+    if (metadata.title) metaLines.push(`title: "${metadata.title.replace(/"/g, '\\"')}"`);
+    if (metadata.creator) metaLines.push(`author: "${metadata.creator.replace(/"/g, '\\"')}"`);
+    if (metadata.publisher) metaLines.push(`publisher: "${metadata.publisher}"`);
+    if (metadata.language) metaLines.push(`language: ${metadata.language}`);
+    if (metadata.date) metaLines.push(`date: ${metadata.date}`);
+    if (metadata.identifier) metaLines.push(`identifier: "${metadata.identifier}"`);
+    if (metadata.description) metaLines.push(`description: "${metadata.description.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`);
+    metaLines.push('---');
+    parts.push(metaLines.join('\n'));
+  }
+
+  // Title
+  if (metadata.title) {
+    parts.push(`# ${metadata.title}`);
+    if (metadata.creator) parts.push(`*${metadata.creator}*`);
+    parts.push('');
+  }
+
+  // TOC
+  if (opts.toc && tocItems.length > 0) {
+    parts.push('## 目录\n');
+    tocItems.forEach(item => {
+      const indent = '  '.repeat(Math.max(0, item.depth - 1));
+      parts.push(`${indent}- ${item.label}`);
+    });
+    parts.push('\n---\n');
+  }
+
+  // Content
+  for (let i = 0; i < spine.length; i++) {
+    const item = spine[i];
+    try {
+      const spineFile = zip.file(item.path);
+      if (!spineFile) continue;
+      const html = await spineFile.async('text');
+      const md = htmlToMarkdown(html, opts);
+      if (md.trim()) {
+        if (opts.chapter && i > 0 && md.trim()) {
+          parts.push('\n---\n');
+        }
+        parts.push(md);
+      }
+    } catch (e) {
+      // skip broken spine items
+    }
+  }
+
+  let result = parts.join('\n\n');
+
+  // Clean up
+  if (opts.clean) {
+    result = result.replace(/\n{4,}/g, '\n\n\n');
+    result = result.replace(/[ \t]+\n/g, '\n');
+  }
+
+  result = result.replace(/\n{3,}/g, '\n\n');
+
+  return result.trim();
+}
+
+function parseContainerXml(xml) {
+  const match = xml.match(/full-path="([^"]+)"/);
+  if (match) return match[1];
+  throw new Error('无法解析 container.xml，找不到 OPF 路径');
+}
+
+function parseXml(xmlStr) {
+  const parser = new DOMParser();
+  return parser.parseFromString(xmlStr, 'application/xml');
+}
+
+function parseMetadata(opfDoc) {
+  const ns = 'http://purl.org/dc/elements/1.1/';
+  const meta = {};
+
+  const getFirst = (tag) => {
+    const el = opfDoc.getElementsByTagNameNS(ns, tag)[0]
+      || opfDoc.querySelector(`dc\\:${tag}, ${tag}`);
+    return el ? el.textContent.trim() : '';
+  };
+
+  meta.title = getFirst('title');
+  meta.creator = getFirst('creator');
+  meta.publisher = getFirst('publisher');
+  meta.language = getFirst('language');
+  meta.date = getFirst('date');
+  meta.identifier = getFirst('identifier');
+  meta.description = getFirst('description');
+  return meta;
+}
+
+function parseManifest(opfDoc, opfDir) {
+  const manifest = {};
+  const items = opfDoc.querySelectorAll('manifest item');
+  items.forEach(item => {
+    const id = item.getAttribute('id');
+    const href = item.getAttribute('href');
+    const mt = item.getAttribute('media-type') || '';
+    if (id && href) {
+      manifest[id] = {
+        id, href,
+        path: (opfDir + decodeURIComponent(href)).replace(/\/\//g, '/'),
+        mediaType: mt,
+        props: item.getAttribute('properties') || ''
+      };
+    }
+  });
+  return manifest;
+}
+
+function parseSpine(opfDoc, manifest) {
+  const spine = [];
+  const items = opfDoc.querySelectorAll('spine itemref');
+  items.forEach(ref => {
+    const idref = ref.getAttribute('idref');
+    if (idref && manifest[idref]) {
+      spine.push(manifest[idref]);
+    }
+  });
+  return spine;
+}
+
+function findTocPath(opfDoc, manifest, opfDir) {
+  // EPUB3: nav item
+  const nav = Object.values(manifest).find(m => m.props.includes('nav'));
+  if (nav) return nav.path;
+
+  // EPUB2: ncx
+  const spineEl = opfDoc.querySelector('spine');
+  if (spineEl) {
+    const toc = spineEl.getAttribute('toc');
+    if (toc && manifest[toc]) return manifest[toc].path;
+  }
+
+  const ncx = Object.values(manifest).find(m => m.mediaType.includes('ncx'));
+  if (ncx) return ncx.path;
+
+  return null;
+}
+
+function parseToc(content, tocPath) {
+  const items = [];
+  const doc = parseXml(content);
+
+  // EPUB3 nav
+  const navPoints = doc.querySelectorAll('nav[epub\\:type="toc"] ol li, nav li');
+  if (navPoints.length > 0) {
+    navPoints.forEach(li => {
+      const a = li.querySelector('a');
+      if (a) {
+        const depth = getDepth(li);
+        items.push({ label: a.textContent.trim(), depth });
+      }
+    });
+    return items;
+  }
+
+  // EPUB2 NCX
+  const ncxPoints = doc.querySelectorAll('navPoint');
+  if (ncxPoints.length > 0) {
+    ncxPoints.forEach(np => {
+      const label = np.querySelector('navLabel text');
+      if (label) {
+        const depth = getDepth(np, 'navPoint');
+        items.push({ label: label.textContent.trim(), depth });
+      }
+    });
+    return items;
+  }
+
+  return items;
+}
+
+function getDepth(el, parentTag = 'li') {
+  let depth = 1;
+  let curr = el.parentElement;
+  while (curr) {
+    if (curr.tagName && curr.tagName.toLowerCase() === parentTag.toLowerCase()) depth++;
+    curr = curr.parentElement;
+  }
+  return depth;
+}
+
+// ==================== HTML → MARKDOWN ====================
+function htmlToMarkdown(html, opts) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const body = doc.body || doc.documentElement;
+
+  // Remove scripts, styles, nav, aside
+  ['script', 'style', 'nav', 'aside', 'figure > figcaption'].forEach(sel => {
+    body.querySelectorAll(sel).forEach(el => el.remove());
+  });
+
+  return nodeToMd(body, opts, 0).trim();
+}
+
+function nodeToMd(node, opts, depth) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node.textContent;
+    return text;
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+  const tag = node.tagName.toLowerCase();
+  const children = () => [...node.childNodes].map(c => nodeToMd(c, opts, depth)).join('');
+
+  switch (tag) {
+    case 'h1': return `\n\n# ${inlineText(node)}\n\n`;
+    case 'h2': return `\n\n## ${inlineText(node)}\n\n`;
+    case 'h3': return `\n\n### ${inlineText(node)}\n\n`;
+    case 'h4': return `\n\n#### ${inlineText(node)}\n\n`;
+    case 'h5': return `\n\n##### ${inlineText(node)}\n\n`;
+    case 'h6': return `\n\n###### ${inlineText(node)}\n\n`;
+
+    case 'p':
+    case 'div': {
+      const inner = children().trim();
+      return inner ? `\n\n${inner}\n\n` : '';
+    }
+
+    case 'br': return '\n';
+
+    case 'strong':
+    case 'b': {
+      const t = inlineText(node);
+      return t ? `**${t}**` : '';
+    }
+
+    case 'em':
+    case 'i': {
+      const t = inlineText(node);
+      return t ? `*${t}*` : '';
+    }
+
+    case 'u': {
+      const t = inlineText(node);
+      return t ? `<u>${t}</u>` : '';
+    }
+
+    case 'del':
+    case 's': {
+      const t = inlineText(node);
+      return t ? `~~${t}~~` : '';
+    }
+
+    case 'code': {
+      const t = node.textContent;
+      return t ? `\`${t}\`` : '';
+    }
+
+    case 'pre': {
+      const code = node.querySelector('code');
+      const lang = code
+        ? (code.className.match(/language-(\S+)/) || [])[1] || ''
+        : '';
+      const content = (code || node).textContent;
+      return `\n\n\`\`\`${lang}\n${content}\n\`\`\`\n\n`;
+    }
+
+    case 'blockquote': {
+      const inner = children().trim().split('\n').map(l => '> ' + l).join('\n');
+      return `\n\n${inner}\n\n`;
+    }
+
+    case 'ul': {
+      const items = [...node.querySelectorAll(':scope > li')];
+      if (!items.length) return children();
+      const indent = '  '.repeat(depth);
+      const list = items.map(li => {
+        const subLists = li.querySelectorAll(':scope > ul, :scope > ol');
+        let text = [...li.childNodes]
+          .filter(c => c.nodeType === Node.TEXT_NODE || (c.nodeType === Node.ELEMENT_NODE && !['ul','ol'].includes(c.tagName.toLowerCase())))
+          .map(c => nodeToMd(c, opts, depth + 1))
+          .join('').trim();
+        let sub = '';
+        subLists.forEach(sl => { sub += '\n' + nodeToMd(sl, opts, depth + 1); });
+        return `${indent}- ${text}${sub}`;
+      }).join('\n');
+      return `\n\n${list}\n\n`;
+    }
+
+    case 'ol': {
+      const items = [...node.querySelectorAll(':scope > li')];
+      if (!items.length) return children();
+      const indent = '  '.repeat(depth);
+      const list = items.map((li, idx) => {
+        const text = [...li.childNodes]
+          .filter(c => c.nodeType === Node.TEXT_NODE || (c.nodeType === Node.ELEMENT_NODE && !['ul','ol'].includes(c.tagName.toLowerCase())))
+          .map(c => nodeToMd(c, opts, depth + 1))
+          .join('').trim();
+        return `${indent}${idx + 1}. ${text}`;
+      }).join('\n');
+      return `\n\n${list}\n\n`;
+    }
+
+    case 'table': {
+      return '\n\n' + tableToMd(node) + '\n\n';
+    }
+
+    case 'a': {
+      const href = node.getAttribute('href') || '';
+      const text = inlineText(node);
+      if (!text) return '';
+      // footnote detection
+      if (opts.footnotes && (href.startsWith('#') || node.className.includes('footnote'))) {
+        return `[^${text}]`;
+      }
+      return href && !href.startsWith('#') ? `[${text}](${href})` : text;
+    }
+
+    case 'img': {
+      if (!opts.imgalt) return '';
+      const alt = node.getAttribute('alt') || '';
+      const src = node.getAttribute('src') || '';
+      return alt ? `![${alt}](${src})` : '';
+    }
+
+    case 'hr': return '\n\n---\n\n';
+
+    case 'sup': {
+      const t = inlineText(node);
+      if (opts.footnotes && t) return `^${t}^`;
+      return `<sup>${t}</sup>`;
+    }
+
+    case 'sub': {
+      const t = inlineText(node);
+      return `<sub>${t}</sub>`;
+    }
+
+    case 'span':
+    case 'section':
+    case 'article':
+    case 'main':
+    case 'header':
+    case 'footer':
+    case 'body':
+      return children();
+
+    default:
+      return children();
+  }
+}
+
+function inlineText(node) {
+  return [...node.childNodes].map(c => {
+    if (c.nodeType === Node.TEXT_NODE) return c.textContent;
+    if (c.nodeType !== Node.ELEMENT_NODE) return '';
+    const t = c.tagName.toLowerCase();
+    if (t === 'strong' || t === 'b') return `**${inlineText(c)}**`;
+    if (t === 'em' || t === 'i') return `*${inlineText(c)}*`;
+    if (t === 'code') return `\`${c.textContent}\``;
+    if (t === 'br') return '\n';
+    return inlineText(c);
+  }).join('');
+}
+
+function tableToMd(table) {
+  const rows = [...table.querySelectorAll('tr')];
+  if (!rows.length) return '';
+
+  const data = rows.map(row =>
+    [...row.querySelectorAll('td, th')].map(cell => inlineText(cell).trim().replace(/\|/g, '\\|'))
+  );
+
+  if (!data.length) return '';
+
+  const cols = Math.max(...data.map(r => r.length));
+  const pad = (row) => {
+    while (row.length < cols) row.push('');
+    return row;
+  };
+
+  const header = pad(data[0]);
+  const sep = header.map(() => '---');
+  const body = data.slice(1).map(pad);
+
+  const fmt = row => '| ' + row.join(' | ') + ' |';
+  const lines = [fmt(header), fmt(sep), ...body.map(fmt)];
+  return lines.join('\n');
+}
+</script>
+</body>
+</html>
